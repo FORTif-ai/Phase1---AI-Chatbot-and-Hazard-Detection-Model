@@ -50,3 +50,8 @@ typing-extensions==4.12.2
 uritemplate==4.1.1
 urllib3==2.3.0
 zstandard==0.23.0
+
+# RAG
+qdrant-client
+openai
+tiktoken
