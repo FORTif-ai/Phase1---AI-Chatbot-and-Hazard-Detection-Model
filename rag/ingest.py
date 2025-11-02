@@ -103,28 +103,22 @@ def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-def setup_qdrant_collection(
+def ensure_collection_exists(
     client: QdrantClient, 
-    collection_name: str,
-    recreate: bool = False
+    collection_name: str
 ) -> None:
     """
-    Ensures the Qdrant collection is created with the correct configuration.
+    Ensures the Qdrant collection exists. Creates it if it doesn't exist.
     
     Args:
         client: QdrantClient instance
         collection_name: Name of the collection
-        recreate: If True, deletes existing collection before creating
     """
     try:
-        collection_exists = client.collection_exists(collection_name)
-        
-        if collection_exists and recreate:
-            logger.info(f"Collection '{collection_name}' exists. Deleting for recreation.")
-            client.delete_collection(collection_name)
-            collection_exists = False
-        
-        if not collection_exists:
+        if client.collection_exists(collection_name):
+            logger.info(f"Collection '{collection_name}' already exists. Using existing collection.")
+        else:
+            logger.info(f"Collection '{collection_name}' does not exist. Creating it now...")
             client.create_collection(
                 collection_name=collection_name,
                 vectors_config=models.VectorParams(
@@ -132,12 +126,10 @@ def setup_qdrant_collection(
                     distance=models.Distance.COSINE,
                 ),
             )
-            logger.info(f"Collection '{collection_name}' created with vector size {VECTOR_DIMENSION}.")
-        else:
-            logger.info(f"Collection '{collection_name}' already exists. Skipping creation.")
+            logger.info(f"Collection '{collection_name}' created successfully with vector size {VECTOR_DIMENSION}.")
             
     except Exception as e:
-        logger.error(f"Failed to setup collection: {e}")
+        logger.error(f"Failed to ensure collection exists: {e}")
         raise IngestionError(f"Collection setup failed: {e}")
 
 
@@ -357,18 +349,18 @@ def initialize_clients() -> Tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
 
 def main() -> None:
     """Main execution function."""
-    logger.info("--- Starting Fortif.ai Master Ingestion Pipeline (Google Edition) ---")
+    logger.info("--- Starting Fortif.ai Data Ingestion ---")
     
     try:
         qdrant_client, google_embedder = initialize_clients()
-        setup_qdrant_collection(qdrant_client, QDRANT_COLLECTION_NAME, recreate=False)
+        ensure_collection_exists(qdrant_client, QDRANT_COLLECTION_NAME)
         
         onboarding_data = get_patient_onboarding_data()
         stats = process_and_ingest_data(qdrant_client, google_embedder, onboarding_data)
         
         collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
         
-        logger.info("--- Ingestion Pipeline Finished! ---")
+        logger.info("--- Ingestion Complete! ---")
         logger.info(f"Ingestion stats: {stats}")
         logger.info(f"Total points in '{QDRANT_COLLECTION_NAME}': {collection_info.points_count}")
         

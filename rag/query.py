@@ -1,72 +1,98 @@
 import os
 import pprint
 
-# Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv()
 
-# Qdrant-specific imports
 from qdrant_client import QdrantClient, models
-
-# --- CHANGE: Import Google's embedding model ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-# --- 1. Configuration ---
-QDRANT_HOST = "http://localhost:6333"
-# --- CHANGE: Point to the new collection name ---
+# Configuration
+QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
 QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
 EMBEDDING_MODEL = "models/embedding-001"
 
-def main():
-    print("--- Starting Fortif.ai Retrieval Test ---")
 
+def query_patient_memories(
+    patient_id: str,
+    question: str,
+    limit: int = 3,
+    include_sensitive: bool = False
+):
+    """
+    Query patient memories from Qdrant.
+    
+    Args:
+        patient_id: The patient ID to query
+        question: The natural language question
+        limit: Maximum number of results to return
+        include_sensitive: Whether to include sensitive memories
+    """
     if not os.getenv("GOOGLE_API_KEY"):
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
 
+    # Initialize clients
     qdrant_client = QdrantClient(QDRANT_HOST)
-    # --- CHANGE: Instantiate the Google embedding model ---
     embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
-    print("Clients for Qdrant and Google AI initialized.")
+    print("Clients initialized.")
 
-    # --- 3. Define the Test Scenario ---
-    patient_id_to_query = "patient_123"
-    user_question = "Tell me a happy memory about my family."
+    print(f"\nQuerying for Patient ID: '{patient_id}'")
+    print(f"Question: '{question}'")
+
+    # Generate query vector
+    print("Generating query embedding...")
+    query_vector = embedding_model.embed_query(question)
+
+    # Build safety filter
+    filter_conditions = [
+        models.FieldCondition(key="patient_id", match=models.MatchValue(value=patient_id))
+    ]
     
-    print(f"\nSimulating query for Patient ID: '{patient_id_to_query}'")
-    print(f"User's Question: '{user_question}'")
-
-    # --- 4. Vectorize the User's Question ---
-    print("Vectorizing user question with Google's model...")
-    query_vector = embedding_model.embed_query(user_question)
-
-    # --- 5. Build the Safety Filter (Logic is identical) ---
-    query_filter = models.Filter(
-        must=[
-            models.FieldCondition(key="patient_id", match=models.MatchValue(value=patient_id_to_query)),
+    if not include_sensitive:
+        filter_conditions.append(
             models.FieldCondition(key="is_sensitive", match=models.MatchValue(value=False))
-        ]
-    )
-    print("Safety filter constructed.")
+        )
+    
+    query_filter = models.Filter(must=filter_conditions)
 
-    # --- 6. Perform the Search ---
-    print("Searching Qdrant for relevant and safe memories...")
+    # Perform search
+    print("Searching Qdrant...")
     search_results = qdrant_client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
         query=query_vector,
         query_filter=query_filter,
-        limit=3,
+        limit=limit,
         with_payload=True
     ).points
 
-    # --- 7. Display the Results ---
+    # Display results
     print("\n--- Search Results ---")
     if not search_results:
-        print("No relevant and safe memories found for this query.")
+        print("No relevant memories found.")
     else:
-        print(f"Found {len(search_results)} results:")
-        for result in search_results:
-            pprint.pprint(result)
-            print("-" * 20)
+        print(f"Found {len(search_results)} result(s):\n")
+        for idx, result in enumerate(search_results, 1):
+            print(f"Result {idx}:")
+            print(f"  Score: {result.score:.4f}")
+            print(f"  Text: {result.payload.get('text', 'N/A')}")
+            print(f"  Topic: {result.payload.get('topic', 'N/A')}")
+            print(f"  Source: {result.payload.get('source', 'N/A')}")
+            print("-" * 50)
+    
+    return search_results
+
+
+def main():
+    """Main execution function."""
+    print("--- Fortif.ai Memory Retrieval System ---\n")
+    
+    # Example query
+    query_patient_memories(
+        patient_id="patient_123",
+        question="Tell me a happy memory about my family.",
+        limit=3,
+        include_sensitive=False
+    )
 
 if __name__ == "__main__":
     main()
