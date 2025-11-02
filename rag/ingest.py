@@ -69,35 +69,115 @@ def setup_qdrant_collection(client: QdrantClient, collection_name: str):
         print(f"An error occurred while creating collection: {e}")
         raise
 
-def process_and_ingest_data(client: QdrantClient, embedding_model: GoogleGenerativeAIEmbeddings, patient_data: list):
-    """Processes the raw data, creates embeddings, and upserts it into Qdrant."""
+def process_and_ingest_data(
+    client: QdrantClient, 
+    embedding_model: GoogleGenerativeAIEmbeddings, 
+    patient_data: list,
+    batch_size: int = 100
+):
+    """
+    Processes raw data, creates embeddings, and upserts to Qdrant with batching.
+    
+    Args:
+        client: QdrantClient instance
+        embedding_model: Embedding model instance
+        patient_data: List of patient records
+        batch_size: Number of points to upsert per batch
+    """
+    if not patient_data:
+        print("No data to process.")
+        return
+    
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    points_to_create = []
-    texts_to_embed = []
+    
+    # Separate concerns: prepare data first
+    chunks_data = _prepare_chunks(patient_data, text_splitter)
+    
+    if not chunks_data:
+        print("No chunks generated after splitting.")
+        return
+    
+    # Generate embeddings in batches to avoid memory issues
+    print(f"Generating embeddings for {len(chunks_data)} chunks...")
+    vectors = _generate_embeddings_batched(
+        embedding_model, 
+        [chunk['text'] for chunk in chunks_data],
+        batch_size=batch_size
+    )
+    print("Embeddings generated successfully.")
+    
+    # Create Qdrant points
+    qdrant_points = [
+        models.PointStruct(
+            id=str(uuid.uuid4()), 
+            vector=vector, 
+            payload=chunk
+        )
+        for chunk, vector in zip(chunks_data, vectors)
+    ]
+    
+    # Batch upsert to Qdrant
+    print(f"Upserting {len(qdrant_points)} points in batches of {batch_size}...")
+    _batch_upsert(client, qdrant_points, batch_size)
+    print("Data ingestion complete.")
 
+
+def _prepare_chunks(
+    patient_data: list, 
+    text_splitter
+) -> list:
+    """Splits patient data into chunks with metadata."""
+    chunks_data = []
+    current_time = datetime.now(timezone.utc).isoformat()
+    
     for record in patient_data:
         chunks = text_splitter.split_text(record["raw_text"])
+        
         for chunk in chunks:
-            payload = {
-                "text": chunk, "patient_id": record["patient_id"], "source": record["source"],
-                "topic": record["topic"], "is_sensitive": record["is_sensitive"],
-                "entities": record["entities"], "ingested_at": datetime.now(timezone.utc).isoformat()
-            }
-            points_to_create.append(payload)
-            texts_to_embed.append(chunk)
+            chunks_data.append({
+                "text": chunk,
+                "patient_id": record["patient_id"],
+                "source": record["source"],
+                "topic": record["topic"],
+                "is_sensitive": record["is_sensitive"],
+                "entities": record["entities"],
+                "ingested_at": current_time  # Same timestamp for all in batch
+            })
+    
+    return chunks_data
 
-    print(f"Generating embeddings for {len(texts_to_embed)} text chunks using Google's model...")
-    vectors = embedding_model.embed_documents(texts_to_embed)
-    print("Embeddings generated successfully.")
 
-    qdrant_points = [
-        models.PointStruct(id=str(uuid.uuid4()), vector=vector, payload=point)
-        for point, vector in zip(points_to_create, vectors)
-    ]
+def _generate_embeddings_batched(
+    embedding_model, 
+    texts: list, 
+    batch_size: int = 100
+) -> list:
+    """Generate embeddings in batches to handle large datasets."""
+    all_vectors = []
+    
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        print(f"  Processing embedding batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
+        vectors = embedding_model.embed_documents(batch)
+        all_vectors.extend(vectors)
+    
+    return all_vectors
 
-    print(f"Upserting {len(qdrant_points)} points into Qdrant...")
-    client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=qdrant_points, wait=True)
-    print("Data ingestion complete.")
+
+def _batch_upsert(
+    client: QdrantClient, 
+    points: list, 
+    batch_size: int = 100
+):
+    """Upsert points to Qdrant in batches."""
+    for i in range(0, len(points), batch_size):
+        batch = points[i:i + batch_size]
+        print(f"  Upserting batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1}")
+        client.upsert(
+            collection_name=QDRANT_COLLECTION_NAME, 
+            points=batch, 
+            wait=True
+        )
 
 if __name__ == "__main__":
     print("--- Starting Fortif.ai Master Ingestion Pipeline (Google Edition) ---")
