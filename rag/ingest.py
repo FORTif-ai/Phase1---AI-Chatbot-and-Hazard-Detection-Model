@@ -1,25 +1,25 @@
 import os
 import uuid
 import logging
+import time
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Tuple
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from qdrant_client import QdrantClient, models
-from qdrant_client.http import models as rest
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-# Configure logging instead of print statements
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# --- 1. Configuration ---
+# --- Configuration ---
 QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
 QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
 EMBEDDING_MODEL = "models/embedding-001"
@@ -30,7 +30,7 @@ CHUNK_OVERLAP = 50
 
 # Retry configuration
 MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
+RETRY_DELAY = 2
 
 
 class IngestionError(Exception):
@@ -84,20 +84,23 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
     ]
 
 
-def validate_patient_record(record: Dict[str, Any]) -> bool:
-    """Validates that a patient record has required fields."""
+def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Validates that a patient record has required fields.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
     required_fields = ["patient_id", "raw_text", "source", "topic", "is_sensitive", "entities"]
     
     for field in required_fields:
         if field not in record:
-            logger.warning(f"Record missing required field '{field}': {record.get('patient_id', 'unknown')}")
-            return False
+            return False, f"Missing required field '{field}'"
     
     if not isinstance(record["raw_text"], str) or not record["raw_text"].strip():
-        logger.warning(f"Record has empty or invalid raw_text: {record.get('patient_id', 'unknown')}")
-        return False
+        return False, "Empty or invalid raw_text"
     
-    return True
+    return True, ""
 
 
 def setup_qdrant_collection(
@@ -163,11 +166,21 @@ def process_and_ingest_data(
         return {"status": "skipped", "reason": "empty_data"}
     
     # Validate records
+    valid_records = []
     if validate_records:
-        valid_records = [r for r in patient_data if validate_patient_record(r)]
+        for record in patient_data:
+            is_valid, error_msg = validate_patient_record(record)
+            if is_valid:
+                valid_records.append(record)
+            else:
+                logger.warning(
+                    f"Invalid record for patient {record.get('patient_id', 'unknown')}: {error_msg}"
+                )
+        
         invalid_count = len(patient_data) - len(valid_records)
         if invalid_count > 0:
             logger.warning(f"Skipped {invalid_count} invalid records")
+        
         patient_data = valid_records
     
     if not patient_data:
@@ -250,13 +263,12 @@ def _prepare_chunks(
                     "topic": record["topic"],
                     "is_sensitive": record["is_sensitive"],
                     "entities": record["entities"],
-                    "chunk_index": idx,  # Track chunk ordering
+                    "chunk_index": idx,
                     "total_chunks": len(chunks),
                     "ingested_at": current_time
                 })
         except Exception as e:
             logger.error(f"Failed to chunk record for patient {record.get('patient_id', 'unknown')}: {e}")
-            # Continue processing other records
             continue
     
     return chunks_data
@@ -279,7 +291,6 @@ def _generate_embeddings_batched(
             logger.info(f"  Processing embedding batch {batch_num}/{total_batches}")
             vectors = embedding_model.embed_documents(batch)
             
-            # Validate vector dimensions
             if vectors and len(vectors[0]) != VECTOR_DIMENSION:
                 raise IngestionError(
                     f"Vector dimension mismatch: expected {VECTOR_DIMENSION}, got {len(vectors[0])}"
@@ -306,7 +317,6 @@ def _batch_upsert(
         batch = points[i:i + batch_size]
         batch_num = i // batch_size + 1
         
-        # Retry logic for transient failures
         for attempt in range(MAX_RETRIES):
             try:
                 logger.info(f"  Upserting batch {batch_num}/{total_batches}")
@@ -315,19 +325,21 @@ def _batch_upsert(
                     points=batch, 
                     wait=True
                 )
-                break  # Success, exit retry loop
+                break
                 
             except Exception as e:
                 if attempt < MAX_RETRIES - 1:
-                    logger.warning(f"Batch {batch_num} failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
-                    import time
+                    logger.warning(
+                        f"Batch {batch_num} failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
+                        f"Retrying in {RETRY_DELAY}s..."
+                    )
                     time.sleep(RETRY_DELAY)
                 else:
                     logger.error(f"Batch {batch_num} failed after {MAX_RETRIES} attempts: {e}")
                     raise
 
 
-def initialize_clients() -> tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
+def initialize_clients() -> Tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
     """Initialize and return Qdrant and embedding clients."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -343,22 +355,17 @@ def initialize_clients() -> tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
         raise
 
 
-def main():
+def main() -> None:
     """Main execution function."""
     logger.info("--- Starting Fortif.ai Master Ingestion Pipeline (Google Edition) ---")
     
     try:
-        # Initialize clients
         qdrant_client, google_embedder = initialize_clients()
-        
-        # Setup collection
         setup_qdrant_collection(qdrant_client, QDRANT_COLLECTION_NAME, recreate=False)
         
-        # Get and process data
         onboarding_data = get_patient_onboarding_data()
         stats = process_and_ingest_data(qdrant_client, google_embedder, onboarding_data)
         
-        # Get final collection info
         collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
         
         logger.info("--- Ingestion Pipeline Finished! ---")
@@ -366,7 +373,7 @@ def main():
         logger.info(f"Total points in '{QDRANT_COLLECTION_NAME}': {collection_info.points_count}")
         
     except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
+        logger.error(f"Pipeline failed: {e}", exc_info=True)
         raise
 
 
