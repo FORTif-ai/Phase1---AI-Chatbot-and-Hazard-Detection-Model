@@ -56,4 +56,4 @@ qdrant-client
 openai
 tiktoken
 langchain-community
-langchain-openai
+langchain-google-genai
