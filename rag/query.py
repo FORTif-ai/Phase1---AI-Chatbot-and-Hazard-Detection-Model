@@ -18,7 +18,7 @@ QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
 EMBEDDING_MODEL = "models/embedding-001"
 
 def main():
-    print("--- Starting Fortif.ai Retrieval Test (Google Edition) ---")
+    print("--- Starting Fortif.ai Retrieval Test ---")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
@@ -50,13 +50,13 @@ def main():
 
     # --- 6. Perform the Search ---
     print("Searching Qdrant for relevant and safe memories...")
-    search_results = qdrant_client.search(
+    search_results = qdrant_client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         query_filter=query_filter,
         limit=3,
         with_payload=True
-    )
+    ).points
 
     # --- 7. Display the Results ---
     print("\n--- Search Results ---")

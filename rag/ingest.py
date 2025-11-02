@@ -50,7 +50,13 @@ def get_patient_onboarding_data():
 def setup_qdrant_collection(client: QdrantClient, collection_name: str):
     """Ensures the Qdrant collection is created with the correct configuration."""
     try:
-        client.recreate_collection(
+        # Check if collection exists first
+        if client.collection_exists(collection_name):
+            print(f"Collection '{collection_name}' already exists. Deleting it first.")
+            client.delete_collection(collection_name)
+        
+        # Create the collection
+        client.create_collection(
             collection_name=collection_name,
             vectors_config=models.VectorParams(
                 # --- CHANGE: Use the new vector dimension ---
