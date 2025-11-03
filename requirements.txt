@@ -57,3 +57,5 @@ openai
 tiktoken
 langchain-community
 langchain-google-genai
+fastapi
+fastapi[all]
