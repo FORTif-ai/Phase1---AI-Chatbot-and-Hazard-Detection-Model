@@ -1,5 +1,4 @@
 import os
-import pprint
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -17,7 +16,8 @@ def query_patient_memories(
     patient_id: str,
     question: str,
     limit: int = 3,
-    include_sensitive: bool = False
+    include_sensitive: bool = False,
+    emotion_filter: str = None
 ):
     """
     Query patient memories from Qdrant.
@@ -27,6 +27,7 @@ def query_patient_memories(
         question: The natural language question
         limit: Maximum number of results to return
         include_sensitive: Whether to include sensitive memories
+        emotion_filter: Optional emotion filter ('positive', 'negative', 'neutral', 'mixed')
     """
     if not os.getenv("GOOGLE_API_KEY"):
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
@@ -53,6 +54,11 @@ def query_patient_memories(
             models.FieldCondition(key="is_sensitive", match=models.MatchValue(value=False))
         )
     
+    if emotion_filter:
+        filter_conditions.append(
+            models.FieldCondition(key="emotion", match=models.MatchValue(value=emotion_filter))
+        )
+    
     query_filter = models.Filter(must=filter_conditions)
 
     # Perform search
@@ -77,6 +83,7 @@ def query_patient_memories(
             print(f"  Text: {result.payload.get('text', 'N/A')}")
             print(f"  Topic: {result.payload.get('topic', 'N/A')}")
             print(f"  Source: {result.payload.get('source', 'N/A')}")
+            print(f"  Emotion: {result.payload.get('emotion', 'N/A')}")
             print("-" * 50)
     
     return search_results

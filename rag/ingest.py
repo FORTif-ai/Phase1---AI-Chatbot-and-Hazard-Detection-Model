@@ -47,7 +47,8 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
             "source": "family_questionnaire",
             "topic": "daily_routine",
             "is_sensitive": False,
-            "entities": ["medication", "news"]
+            "entities": ["medication", "news"],
+            "emotion": "neutral"
         },
         {
             "patient_id": "patient_123",
@@ -55,7 +56,8 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
             "source": "family_questionnaire",
             "topic": "positive_memory",
             "is_sensitive": False,
-            "entities": ["Sarah (granddaughter)"]
+            "entities": ["Sarah (granddaughter)"],
+            "emotion": "positive"
         },
         {
             "patient_id": "patient_123",
@@ -63,7 +65,8 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
             "source": "family_questionnaire",
             "topic": "family_history",
             "is_sensitive": True,
-            "entities": ["John (husband)"]
+            "entities": ["John (husband)"],
+            "emotion": "negative"
         },
         {
             "patient_id": "patient_456",
@@ -71,7 +74,8 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
             "source": "family_questionnaire",
             "topic": "life_history",
             "is_sensitive": False,
-            "entities": ["army", "Germany"]
+            "entities": ["army", "Germany"],
+            "emotion": "positive"
         },
         {
             "patient_id": "patient_456",
@@ -79,7 +83,8 @@ def get_patient_onboarding_data() -> List[Dict[str, Any]]:
             "source": "ehr_note",
             "topic": "medical_reminder",
             "is_sensitive": False,
-            "entities": ["medication"]
+            "entities": ["medication"],
+            "emotion": "neutral"
         }
     ]
 
@@ -91,7 +96,7 @@ def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    required_fields = ["patient_id", "raw_text", "source", "topic", "is_sensitive", "entities"]
+    required_fields = ["patient_id", "raw_text", "source", "topic", "is_sensitive", "entities", "emotion"]
     
     for field in required_fields:
         if field not in record:
@@ -99,6 +104,11 @@ def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
     
     if not isinstance(record["raw_text"], str) or not record["raw_text"].strip():
         return False, "Empty or invalid raw_text"
+    
+    # Validate emotion field
+    valid_emotions = ["positive", "negative", "neutral", "mixed", "unknown"]
+    if record.get("emotion") not in valid_emotions:
+        return False, f"Invalid emotion value. Must be one of: {', '.join(valid_emotions)}"
     
     return True, ""
 
@@ -255,6 +265,7 @@ def _prepare_chunks(
                     "topic": record["topic"],
                     "is_sensitive": record["is_sensitive"],
                     "entities": record["entities"],
+                    "emotion": record["emotion"],
                     "chunk_index": idx,
                     "total_chunks": len(chunks),
                     "ingested_at": current_time
