@@ -1,4 +1,3 @@
-
 import asyncio
 import pipeline
 import speech_recognition as sr
@@ -6,12 +5,10 @@ import os, time
 import whisper
 import io
 import keyboard 
-from convo import Conversation
 import dotenv
 import subprocess
 
 dotenv.load_dotenv("keys.env")
-
 
 async def listen_for_commands():
 

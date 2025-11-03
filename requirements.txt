@@ -51,6 +51,13 @@ uritemplate==4.1.1
 urllib3==2.3.0
 zstandard==0.23.0
 
+SpeechRecognition
+keyboard
+PyAudio
+git+https://github.com/1-mbps/simple_llm.git
+openai-whisper
+
+
 # RAG
 qdrant-client
 openai

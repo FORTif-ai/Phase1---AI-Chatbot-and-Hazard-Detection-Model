@@ -40,6 +40,8 @@ fi
 
 # Check if dependencies are installed
 echo ""
+python3 -m venv ../venv
+source ../venv/bin/activate
 echo "📦 Checking Python dependencies..."
 if python -c "import qdrant_client" 2>/dev/null; then
     echo "✅ Dependencies appear to be installed"

@@ -1,14 +1,16 @@
 from typing import Dict, Any
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
+from dotenv import load_dotenv
 import base64
 from langchain_core.messages import HumanMessage
 import whisper
 
 # Import services
 from mycalendar import CalendarService
-from convo import Conversation
 from maindelegator import delegation
+
+load_dotenv("rag/.env")
 
 class Processor:
     """Handle different types of LLM actions through a pipeline system."""
@@ -19,14 +21,16 @@ class Processor:
         # Initialize the LLM (Gemini for testing)
         self.llm = ChatGoogleGenerativeAI(
             model='gemini-2.5-flash',
-            api_key='API KEY' #add ur api key here
+            api_key=os.getenv("GOOGLE_API_KEY")  # Use the API key from the environment variable
         )
         
         # Defined actions for the LLM
         #print("we're initialising")
         self.actions = {
             'calendar': CalendarService(self.llm).handle_calendar,
-            'pill': delegation.delegate
+            'pill': delegation.delegate,
+            'call': delegation.delegate,
+            'personal': delegation.delegate
         }
     
     async def process_audio(self, audio: bytes, mime_type: str = 'audio/wav') -> Dict[str, Any]:
@@ -72,12 +76,10 @@ class Processor:
         try:
             # Determine the action type from the command
             action_type = await self._determine_action_type(command)
-            print("Action Type" + action_type)
+            print("Action Type: " + action_type)
             
             # Get the function for the determined action type
             handler = self.actions.get(action_type)
-
-            
             
             # Check if handler is defined
             if not handler:
@@ -115,3 +117,5 @@ class Processor:
                 "status": "error",
                 "message": f"Processing error: {str(e)}"
             }
+        
+
