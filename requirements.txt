@@ -56,6 +56,8 @@ keyboard
 PyAudio
 git+https://github.com/1-mbps/simple_llm.git
 openai-whisper
+opencv-python
+ultralytics
 
 
 # RAG
