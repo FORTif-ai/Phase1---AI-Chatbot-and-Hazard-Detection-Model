@@ -4,11 +4,13 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple
+from xmlrpc import client
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from qdrant_client import QdrantClient, models
+import weaviate 
+from weaviate_client_setup import get_weaviate_client, ensure_schema_exists, CLASS_NAME, VECTOR_DIMENSION
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
@@ -20,10 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
-QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
 EMBEDDING_MODEL = "models/embedding-001"
-VECTOR_DIMENSION = 768
 DEFAULT_BATCH_SIZE = 100
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
@@ -103,48 +102,18 @@ def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-def ensure_collection_exists(
-    client: QdrantClient, 
-    collection_name: str
-) -> None:
-    """
-    Ensures the Qdrant collection exists. Creates it if it doesn't exist.
-    
-    Args:
-        client: QdrantClient instance
-        collection_name: Name of the collection
-    """
-    try:
-        if client.collection_exists(collection_name):
-            logger.info(f"Collection '{collection_name}' already exists. Using existing collection.")
-        else:
-            logger.info(f"Collection '{collection_name}' does not exist. Creating it now...")
-            client.create_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=VECTOR_DIMENSION,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            logger.info(f"Collection '{collection_name}' created successfully with vector size {VECTOR_DIMENSION}.")
-            
-    except Exception as e:
-        logger.error(f"Failed to ensure collection exists: {e}")
-        raise IngestionError(f"Collection setup failed: {e}")
-
-
 def process_and_ingest_data(
-    client: QdrantClient, 
+    client: weaviate.Client, 
     embedding_model: GoogleGenerativeAIEmbeddings, 
     patient_data: List[Dict[str, Any]],
     batch_size: int = DEFAULT_BATCH_SIZE,
     validate_records: bool = True
 ) -> Dict[str, Any]:
     """
-    Processes raw data, creates embeddings, and upserts to Qdrant with batching.
-    
+    Processes raw data, creates embeddings, and upserts to Weaviate with batching.
+
     Args:
-        client: QdrantClient instance
+        client: Weaviate client instance
         embedding_model: Embedding model instance
         patient_data: List of patient records
         batch_size: Number of points to process per batch
@@ -208,32 +177,21 @@ def process_and_ingest_data(
         logger.error(f"Failed to generate embeddings: {e}")
         raise IngestionError(f"Embedding generation failed: {e}")
     
-    # Create Qdrant points
-    qdrant_points = [
-        models.PointStruct(
-            id=str(uuid.uuid4()), 
-            vector=vector, 
-            payload=chunk
-        )
-        for chunk, vector in zip(chunks_data, vectors)
-    ]
-    
-    # Batch upsert
+    # Batch upserts to Weaviate
     try:
-        logger.info(f"Upserting {len(qdrant_points)} points in batches of {batch_size}...")
-        _batch_upsert(client, qdrant_points, batch_size)
+        logger.info(f"Upserting (length: {len(chunks_data)}) chunks to Weaviate in batches of {batch_size}...")
+        _batch_upsert(client, chunks_data, vectors, batch_size)
         logger.info("Data ingestion complete.")
     except Exception as e:
         logger.error(f"Failed to upsert points: {e}")
         raise IngestionError(f"Upsert failed: {e}")
-    
+
     return {
         "status": "success",
         "records_processed": len(patient_data),
         "chunks_created": len(chunks_data),
-        "points_upserted": len(qdrant_points)
+        "points_upserted": len(chunks_data)
     }
-
 
 def _prepare_chunks(
     patient_data: List[Dict[str, Any]], 
@@ -263,8 +221,14 @@ def _prepare_chunks(
             logger.error(f"Failed to chunk record for patient {record.get('patient_id', 'unknown')}: {e}")
             continue
     
-    return chunks_data
+    # Ensures all entities are strings for Weaviate's "text[]" type
+    for chunk in chunks_data:
+        if 'entities' in chunk and chunk['entities'] is not None:
+            chunk['entities'] = [str(e) for e in chunk['entities']]
+        else:
+            chunk['entities'] = []
 
+    return chunks_data
 
 def _generate_embeddings_batched(
     embedding_model: GoogleGenerativeAIEmbeddings, 
@@ -279,69 +243,92 @@ def _generate_embeddings_batched(
         batch = texts[i:i + batch_size]
         batch_num = i // batch_size + 1
         
-        try:
-            logger.info(f"  Processing embedding batch {batch_num}/{total_batches}")
-            vectors = embedding_model.embed_documents(batch)
-            
-            if vectors and len(vectors[0]) != VECTOR_DIMENSION:
-                raise IngestionError(
-                    f"Vector dimension mismatch: expected {VECTOR_DIMENSION}, got {len(vectors[0])}"
-                )
-            
-            all_vectors.extend(vectors)
-            
-        except Exception as e:
-            logger.error(f"Failed to generate embeddings for batch {batch_num}: {e}")
-            raise
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"  Processing embedding batch {batch_num}/{total_batches}")
+                vectors = embedding_model.embed_documents(batch)
+                
+                if vectors and len(vectors[0]) != VECTOR_DIMENSION:
+                    raise IngestionError(
+                        f"Vector dimension mismatch: expected {VECTOR_DIMENSION}, got {len(vectors[0])}"
+                    )
+                
+                all_vectors.extend(vectors)
+                break # Exit retry loop on success
+                
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Embedding batch {batch_num} failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
+                        f"Retrying in {RETRY_DELAY}s..."
+                    )
+                    time.sleep(RETRY_DELAY)
+                else:
+                    logger.error(f"Embedding batch {batch_num} failed after {MAX_RETRIES} attempts: {e}")
+                    raise
     
     return all_vectors
 
 
 def _batch_upsert(
-    client: QdrantClient, 
-    points: List[models.PointStruct], 
+    client: weaviate.Client, 
+    chunks_data: List[Dict[str, Any]],
+    vectors: List[List[float]],
     batch_size: int = DEFAULT_BATCH_SIZE
 ) -> None:
-    """Upsert points to Qdrant in batches with retry logic."""
-    total_batches = (len(points) - 1) // batch_size + 1
-    
-    for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
-        batch_num = i // batch_size + 1
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"  Upserting batch {batch_num}/{total_batches}")
-                client.upsert(
-                    collection_name=QDRANT_COLLECTION_NAME, 
-                    points=batch, 
-                    wait=True
-                )
-                break
-                
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1:
-                    logger.warning(
-                        f"Batch {batch_num} failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
-                        f"Retrying in {RETRY_DELAY}s..."
-                    )
-                    time.sleep(RETRY_DELAY)
-                else:
-                    logger.error(f"Batch {batch_num} failed after {MAX_RETRIES} attempts: {e}")
-                    raise
+    """Upsert points to Weaviate in batches with retry logic."""
+    total_objects = len(chunks_data)
+    total_batches = (total_objects - 1) // batch_size + 1
+
+    client.batch.configure(
+        batch_size=batch_size,
+        dynamic=True,
+        num_workers=2,
+        timeout_retries=MAX_RETRIES
+    )
+
+    with client.batch as batch:
+        for i, (chunk, vector) in enumerate(zip(chunks_data, vectors)):
+
+            # Map chunk data structure to weaviate object properties
+            properties = {
+                "content": chunk.get("text", ""),
+                "patient_id": chunk.get("patient_id", ""),
+                "source_filename": chunk.get("source", ""),
+                "topic": chunk.get("topic", ""),
+                "is_sensitive": chunk.get("is_sensitive", False),
+                "entities": chunk.get("entities", []),
+                "chunk_index": chunk.get("chunk_index", 0),
+                "total_chunks": chunk.get("total_chunks", 0),
+                "ingested_at": chunk.get("ingested_at", datetime.now(timezone.utc).isoformat())
+            }
+
+            # Combine patient_id and content for a unique identifier
+            unique_key_string = f"{properties['patient_id']}_{properties['content']}_{properties['chunk_index']}"    
+            deterministic_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, unique_key_string)
+            
+            batch.add_data_object(
+                data_object=properties,
+                class_name=CLASS_NAME,
+                vector=vector,
+                uuid=deterministic_uuid
+            )
+            
+            if (i + 1) % batch_size == 0 or (i + 1) == total_objects:
+                logger.info(f"  Added batch {i // batch_size + 1}/{total_batches} to buffer.")    
 
 
-def initialize_clients() -> Tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
-    """Initialize and return Qdrant and embedding clients."""
+def initialize_clients() -> Tuple[weaviate.Client, GoogleGenerativeAIEmbeddings]:
+    """Initialize and return Weaviate and embedding clients."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
     
     try:
-        qdrant_client = QdrantClient(QDRANT_HOST)
+        weaviate_client = get_weaviate_client()
         google_embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
-        logger.info("Clients for Qdrant and Google AI initialized.")
-        return qdrant_client, google_embedder
+        logger.info("Clients for Weaviate and Google AI initialized.")
+        return weaviate_client, google_embedder
     except Exception as e:
         logger.error(f"Failed to initialize clients: {e}")
         raise
@@ -352,18 +339,16 @@ def main() -> None:
     logger.info("--- Starting Fortif.ai Data Ingestion ---")
     
     try:
-        qdrant_client, google_embedder = initialize_clients()
-        ensure_collection_exists(qdrant_client, QDRANT_COLLECTION_NAME)
+        weaviate_client, google_embedder = initialize_clients()
+
+        ensure_schema_exists(weaviate_client)
         
         onboarding_data = get_patient_onboarding_data()
-        stats = process_and_ingest_data(qdrant_client, google_embedder, onboarding_data)
-        
-        collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+        stats = process_and_ingest_data(weaviate_client, google_embedder, onboarding_data)
         
         logger.info("--- Ingestion Complete! ---")
         logger.info(f"Ingestion stats: {stats}")
-        logger.info(f"Total points in '{QDRANT_COLLECTION_NAME}': {collection_info.points_count}")
-        
+
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
         raise

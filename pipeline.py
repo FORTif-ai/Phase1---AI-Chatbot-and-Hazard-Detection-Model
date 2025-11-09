@@ -70,8 +70,8 @@ class Processor:
                 "status": "error",
                 "message": f"Processing error: {str(e)}"
             }
-    
-    async def process_command(self, command: str) -> Dict[str, Any]:
+
+    async def process_command(self, command: str, patient_id: str) -> Dict[str, Any]:
         """Process a voice command through the LLM action pipeline."""
         try:
             # Determine the action type from the command
@@ -89,7 +89,10 @@ class Processor:
                 }
                 
             # Call the handler
-            return await handler(command)
+            if action_type == 'calendar':
+                return await handler(command)
+            else:
+                return await handler(command, patient_id)
             
         except Exception as e:
             return {

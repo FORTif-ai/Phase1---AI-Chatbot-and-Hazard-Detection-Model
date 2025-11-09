@@ -166,7 +166,7 @@ class CalendarService:
                 json.dump(events, indent=2, fp=f)
         except Exception as e:
             print(f"Warning: Failed to log event to file: {str(e)}")
-            
+
     async def handle_calendar(self, command: str) -> Dict[str, Any]:
         """Handle calendar-related commands."""
         # Check if calendar service is initialized

@@ -7,10 +7,12 @@ import io
 import keyboard 
 import dotenv
 import subprocess
+from typing import Optional
 
-dotenv.load_dotenv("keys.env")
+dotenv.load_dotenv("rag/.env")
+os.environ['GRPC_VERBOSITY'] = 'ERROR' # Suppress gRPC warnings
 
-async def listen_for_commands():
+async def listen_for_commands(patient_id_input: str):
 
     recognizer = sr.Recognizer()
 
@@ -49,7 +51,7 @@ async def listen_for_commands():
 
                     # Send to your downstream pipeline
                     processor = pipeline.Processor()
-                    await processor.process_command(result["text"])
+                    await processor.process_command(result["text"], patient_id=patient_id_input)
 
                     await asyncio.sleep(0.1)
                 if key.lower() == "h":
@@ -57,10 +59,18 @@ async def listen_for_commands():
                     
     except KeyboardInterrupt:
         print("\nStopping voice command listener…")
-                
-
-
-
 
 if __name__ == "__main__":
-    asyncio.run(listen_for_commands())
+    # --- PROMPT FOR USER ID ---
+    print("\n--- Fortif.ai Voice Command Listener ---")
+    
+    # Get the patient ID from the user
+    patient_id_input = input("Please enter the Patient ID for this session (e.g., patient_123): ")
+    
+    if not patient_id_input:
+        print("❌ Patient ID cannot be empty. Exiting.")
+    else:
+        print(f"✅ Session Patient ID set to: {patient_id_input}")
+        
+        # Pass the patient ID to the asynchronous listener function
+        asyncio.run(listen_for_commands(patient_id_input))

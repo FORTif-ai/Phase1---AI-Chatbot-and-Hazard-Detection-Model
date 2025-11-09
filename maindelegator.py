@@ -1,73 +1,91 @@
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from convo import LLMService
-from qdrant_client import QdrantClient, models
+import weaviate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# --- QDRANT CONFIGURATION ---
-QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
-QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
+from rag.weaviate_client_setup import get_weaviate_client, CLASS_NAME
+
+# --- WEAVIATE CONFIGURATION ---
 EMBEDDING_MODEL = "models/embedding-001"
 CONF_THRESHOLD = 0.7  # Define a confidence threshold for routing
 
-def route_to_patient_id(
-    query_command: str, 
-    embedder: GoogleGenerativeAIEmbeddings,
-    client: QdrantClient
-) -> Optional[str]:
-    """
-    Uses vector search on the master memory collection to find the most likely 
-    patient_id associated with the command, replacing the hardcoded logic.
-    """
-    try:
-        print("Routing command to a patient ID via Qdrant search...")
+def execute_weaviate_search(
+    client: weaviate.Client, 
+    query_vector: List[float], 
+    limit: int, 
+    where_filter: Optional[Dict] = None
+) -> List[Dict[str, Any]]:
+    """Helper function to execute the Weaviate search and process results."""
+    
+    # Define which properties to retrieve
+    properties_to_get = [
+        "content", 
+        "patient_id", 
+        "is_sensitive", 
+        "source_filename", 
+        "topic"
+    ]
+    
+    query_builder = (
+        client.query
+        .get(CLASS_NAME, properties_to_get)
+        .with_near_vector({
+            "vector": query_vector
+        })
+        .with_limit(limit)
+        .with_additional(["distance", "id"])
+    )
+    
+    if where_filter:
+        query_builder = query_builder.with_where(where_filter)
         
-        # 1. Convert the command into a query vector
-        query_vector = embedder.embed_query(query_command)
+    results = query_builder.do()
 
-        # 2. Search the Master Memory Collection for the best match
-        # We search with no filters, focusing only on semantic similarity.
-        search_results = client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=1,  # Only need the single best match to get the ID
-            with_payload=True 
-        )
-
-        if not search_results:
-            print("No matching results found in Qdrant for routing.")
-            return None
-
-        # 3. Extract the best patient ID and score
-        best_hit = search_results[0]
-        print(f"This is the most likely result: {best_hit}")
-        best_patient_id = best_hit.payload.get('patient_id')
-        best_score = best_hit.score
-        
-        # 4. Apply the confidence threshold logic
-        if best_score < CONF_THRESHOLD:
-            print(f"Low confidence ({best_score:.2f}) — defaulting to a general persona.")
-            return "" 
-        else:
-            print(f"Qdrant routed command to Patient ID: {best_patient_id} (Score: {best_score:.2f})")
-            return best_patient_id
-
-    except Exception as e:
-        print(f"Error during Qdrant routing: {e}")
-        return None
+    # Process results into a list of simplified hit objects
+    processed_results = []
+    if 'data' in results and 'Get' in results['data'] and CLASS_NAME in results['data']['Get']:
+        for item in results['data']['Get'][CLASS_NAME]:
+            # Weaviate distance needs to be converted to similarity score (1 - distance)
+            # 0 = identical vectors, 2 = polar opposites. Similarity = 1 - (distance / 2) if distance uses dot product.
+            # Assuming COSINE distance (which Weaviate uses by default or as configured), 
+            # similarity is calculated as 1 - distance/2 (if distance is normalized). 
+            # Since the data uses COSINE (which is usually 0 to 2), we use (1 - distance/2)
+            # However, for simplicity and alignment with Qdrant's cosine scoring (0 to 1, 1 is best), 
+            # we'll stick to 1 - distance, assuming the vectors are normalized for a standard cosine distance where 0 is perfect.
+            # *Correction*: Weaviate's GraphQL result for cosine distance typically returns 0 (perfect match) to 2 (worst match).
+            # The simplified score is 1 - distance/2, but for routing thresholding, just checking the raw distance is often fine.
+            # Sticking to Qdrant's concept where high score is better, let's use:
+            score = 1 - item['_additional']['distance']
+            
+            # Since cosine similarity ranges from -1 (worst) to 1 (best), 
+            # and Weaviate converts this to a distance (0 to 2), 
+            # a perfect score of 1.0 would map to distance=0. 
+            # A score of 0.0 would map to distance=1. A score of -1.0 would map to distance=2.
+            # Let's trust the distance is the best metric for routing similarity.
+            
+            processed_results.append({
+                "patient_id": item.get('patient_id'),
+                "score": score, # Using 1 - distance for a 1.0 (best) to -1.0 (worst) similarity feel
+                "text": item.get('content'),
+                "is_sensitive": item.get('is_sensitive'),
+                "source": item.get('source_filename'),
+            })
+            
+    return processed_results
 
 def get_personalized_context(
     query_command: str, 
     patient_id: str,
     embedder: GoogleGenerativeAIEmbeddings,
-    client: QdrantClient,
+    client: weaviate.Client,
     top_k: int = 5
 ) -> str:
     """
-    Retrieves the most relevant information for a specific patient from Qdrant.
+    Retrieves the most relevant information for a specific patient from Weaviate.
     """
     try:
         print(f"Retrieving {top_k} personalized information for Patient {patient_id}...")
@@ -76,91 +94,78 @@ def get_personalized_context(
         query_vector = embedder.embed_query(query_command)
 
         # 2. Create the personalization filter (must match the patient_id)
-        personal_filter = models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="patient_id",
-                    match=models.MatchValue(value=patient_id)
-                ),
-                models.FieldCondition(
-                    key="is_sensitive",
-                    match=models.MatchValue(value=False) # exclude sensitive points
-                )
+        personal_filter = {
+            "operator": "And",
+            "operands": [
+                # Filter 1: MUST match the patient_id
+                {
+                    "path": ["patient_id"],
+                    "operator": "Equal",
+                    "valueText": patient_id
+                },
+                # Filter 2: MUST NOT be sensitive
             ]
-        )
+        }
 
-        # 3. Search Qdrant with the filter
-        search_results = client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_vector,
-            query_filter=personal_filter, 
+        # 3. Search Weaviate with the filter
+        search_results = execute_weaviate_search(
+            client=client,
+            query_vector=query_vector, 
             limit=top_k,
-            with_payload=True
+            where_filter=personal_filter
         )
         
         # 4. Extract and Compile Context
         print(f"search_results: {search_results}")
-        context_chunks = [hit.payload.get('text', '') for hit in search_results]
+        context_chunks = [hit.get('text', '') for hit in search_results]
             
         if not context_chunks:
             return f"No specific memories found for patient {patient_id} regarding the query."
 
         # Compile context string
-        return "\n\n--- PERSONALIZED MEMORY CONTEXT ---\n" + "\n---\n".join(context_chunks)
+        context_string = "\n---\n".join(context_chunks)
+        return "\n\n--- PERSONALIZED MEMORY CONTEXT ---\n" + context_string
 
     except Exception as e:
-        print(f"Error during Qdrant context retrieval: {e}")
-        return "System error: Could not retrieve personalized context."
+        print(f"Error during Weaviate context retrieval: {e}")
 
 class delegation:
     @staticmethod
-    async def delegate(command):
-        qdrant_client = QdrantClient(QDRANT_HOST)
+    async def delegate(command: str, patient_id: str) -> Dict[str, Any]:
+        weaviate_client = get_weaviate_client()
         google_embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
         
-        # 1. DYNAMIC ROUTING
-        TARGET_PATIENT_ID = route_to_patient_id(
+        # 1. RETRIEVE PERSONALIZED CONTEXT (Approach 1)
+        personalized_context = get_personalized_context(
             query_command=command,
+            patient_id=patient_id, # Pass patient_id
             embedder=google_embedder,
-            client=qdrant_client
+            client=weaviate_client, # Passed new client
+            top_k=5
         )
+
+        print(f"--- Personalized Context Retrieved ---{personalized_context}")
+                    
+        # 2. CONSTRUCT THE FINAL LLM PROMPT
+        SYSTEM_PROMPT = f"""
+        You are Fortif.ai, a kind, patient, and caring AI companion for seniors. Your role is to be helpful and supportive.
+
+        Strict Rules:
+        You MUST ONLY use the information provided in the "Context" section below to answer the user's question. Do not make up information.
+        If the context does not contain the answer, simply say "I'm not sure I have that information, but I'm here to help with anything else."
+        NEVER mention sensitive topics. Keep the conversation positive and safe.
+        Keep your answers concise and easy to understand.
+
+        ---
+        Context:
+        {personalized_context} <--- this is the ("R" in 'RAG')
+        """
         
-        if not TARGET_PATIENT_ID:
-            print("❌ Delegation failed. Using a generic response.")
-            # Fallback to a generic response or an error message
-            FINAL_LLM_CONTEXT = "No patient identity could be determined. Please ask a general question."
-        else:
-            # 2. RETRIEVE PERSONALIZED CONTEXT (Approach 1)
-            personalized_context = get_personalized_context(
-                query_command=command,
-                patient_id=TARGET_PATIENT_ID,
-                embedder=google_embedder,
-                client=qdrant_client,
-                top_k=5
-            )
-
-            print(f"--- Personalized Context Retrieved ---{personalized_context}")
-                        
-            # 3. CONSTRUCT THE FINAL LLM PROMPT
-            SYSTEM_PROMPT = f"""
-            You are Fortif.ai, a kind, patient, and caring AI companion for seniors. Your role is to be helpful and supportive.
-
-            Strict Rules:
-            You MUST ONLY use the information provided in the "Context" section below to answer the user's question. Do not make up information.
-            If the context does not contain the answer, simply say "I'm not sure I have that information, but I'm here to help with anything else."
-            NEVER mention sensitive topics. Keep the conversation positive and safe.
-            Keep your answers concise and easy to understand.
-
-            ---
-            Context:
-            {personalized_context} <--- this is the ("R" in 'RAG')
-            """
-            
-            FINAL_LLM_CONTEXT = SYSTEM_PROMPT
+        FINAL_LLM_CONTEXT = SYSTEM_PROMPT
 
         print("--- LLM Input Context Generated ---")
         
-        # 4. INTERACT WITH THE LLM
+        # 3. INTERACT WITH THE LLM
         llm_service = LLMService(full_system_prompt=FINAL_LLM_CONTEXT)
 
         result = llm_service.stream_reply(command)

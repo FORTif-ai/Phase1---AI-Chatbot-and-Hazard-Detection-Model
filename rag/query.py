@@ -1,15 +1,15 @@
 import os
 import pprint
+from typing import List, Dict, Any
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from qdrant_client import QdrantClient, models
+import weaviate
+from weaviate_client_setup import get_weaviate_client, CLASS_NAME, VECTOR_DIMENSION
+
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-# Configuration
-QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
-QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
 EMBEDDING_MODEL = "models/embedding-001"
 
 
@@ -18,21 +18,24 @@ def query_patient_memories(
     question: str,
     limit: int = 3,
     include_sensitive: bool = False
-):
+) -> List[Dict[str, Any]]:
     """
-    Query patient memories from Qdrant.
+    Query patient memories from Weaviate with filtering.
     
     Args:
         patient_id: The patient ID to query
         question: The natural language question
         limit: Maximum number of results to return
         include_sensitive: Whether to include sensitive memories
+    
+    Returns:
+        List of dictionaries containing retrieved content and metadata.
     """
     if not os.getenv("GOOGLE_API_KEY"):
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
 
     # Initialize clients
-    qdrant_client = QdrantClient(QDRANT_HOST)
+    weaviate_client = get_weaviate_client() 
     embedding_model = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
     print("Clients initialized.")
 
@@ -43,48 +46,97 @@ def query_patient_memories(
     print("Generating query embedding...")
     query_vector = embedding_model.embed_query(question)
 
-    # Build safety filter
-    filter_conditions = [
-        models.FieldCondition(key="patient_id", match=models.MatchValue(value=patient_id))
+    print("Building Weaviate filter...")
+    
+    # 1. Base filter: MUST match the specific patient_id
+    patient_filter = {
+        "path": ["patient_id"], 
+        "operator": "Equal", 
+        "valueText": patient_id
+    }
+    
+    # 2. Safety filter: Optionally filter out sensitive memories
+    sensitive_filter = None
+    if not include_sensitive:
+        sensitive_filter = {
+            "path": ["is_sensitive"],
+            "operator": "Equal",
+            "valueBoolean": False
+        }
+
+    # Combine filters into a single 'where' clause
+    where_filter = {
+        "operator": "And",
+        "operands": [patient_filter]
+    }
+    if sensitive_filter:
+        where_filter["operands"].append(sensitive_filter)
+
+    # 3. Perform Vector Search (GraphQL NearVector)
+    print("Searching Weaviate...")
+    
+    # Define which properties to retrieve
+    properties_to_get = [
+        "content",
+        "topic", 
+        "source_filename", 
+        "is_sensitive"
     ]
     
-    if not include_sensitive:
-        filter_conditions.append(
-            models.FieldCondition(key="is_sensitive", match=models.MatchValue(value=False))
-        )
+    search_results = (
+        weaviate_client.query
+        .get(CLASS_NAME, properties_to_get)
+        .with_near_vector({
+            "vector": query_vector
+        })
+        .with_where(where_filter) # Apply the personalization and safety filter
+        .with_limit(limit)
+        .with_additional(["distance", "id"]) # Request similarity score (distance) and object ID
+        .do()
+    )
     
-    query_filter = models.Filter(must=filter_conditions)
-
-    # Perform search
-    print("Searching Qdrant...")
-    search_results = qdrant_client.query_points(
-        collection_name=QDRANT_COLLECTION_NAME,
-        query=query_vector,
-        query_filter=query_filter,
-        limit=limit,
-        with_payload=True
-    ).points
+    # 4. Process Results
+    retrieved_points = []
+    
+    if 'data' in search_results and 'Get' in search_results['data'] and CLASS_NAME in search_results['data']['Get']:
+        for item in search_results['data']['Get'][CLASS_NAME]:
+            # Weaviate distance needs to be converted to similarity score (1 - distance)
+            score = 1 - item['_additional']['distance']
+            retrieved_points.append({
+                "score": score, 
+                "payload": {
+                    "text": item.get('content', 'N/A'),
+                    "topic": item.get('topic', 'N/A'),
+                    "source": item.get('source_filename', 'N/A'),
+                    "is_sensitive": item.get('is_sensitive', 'N/A'),
+                    "id": item['_additional']['id']
+                }
+            })
 
     # Display results
     print("\n--- Search Results ---")
-    if not search_results:
+    if not retrieved_points:
         print("No relevant memories found.")
     else:
-        print(f"Found {len(search_results)} result(s):\n")
-        for idx, result in enumerate(search_results, 1):
+        print(f"Found {len(retrieved_points)} result(s):\n")
+        for idx, result in enumerate(retrieved_points, 1):
+            # Adjusted print for Weaviate result structure
+            text_content = result['payload'].get('text', 'N/A')
             print(f"Result {idx}:")
-            print(f"  Score: {result.score:.4f}")
-            print(f"  Text: {result.payload.get('text', 'N/A')}")
-            print(f"  Topic: {result.payload.get('topic', 'N/A')}")
-            print(f"  Source: {result.payload.get('source', 'N/A')}")
+            print(f"  Score: {result['score']:.4f}")
+            print(f"  Text: {text_content[:100]}...")
+            print(f"  Topic: {result['payload'].get('topic', 'N/A')}")
+            print(f"  Source: {result['payload'].get('source', 'N/A')}")
+            print(f"  Sensitive: {result['payload'].get('is_sensitive', 'N/A')}")
             print("-" * 50)
     
-    return search_results
+    # Return the compiled format for ease of integration
+    return [hit['payload'] for hit in retrieved_points] 
 
 
 def main():
     """Main execution function."""
-    print("--- Fortif.ai Memory Retrieval System ---\n")
+    print("--- Fortif.ai Memory Retrieval System (Weaviate) ---\n")
     
     # Example query
     query_patient_memories(
