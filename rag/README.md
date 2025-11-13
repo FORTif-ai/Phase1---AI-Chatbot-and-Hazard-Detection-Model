@@ -108,10 +108,11 @@ docker-compose logs -f weaviate
 
 ## Architecture
 
-- **Weaviate**: Vector database for storing embeddings (v1.33.3)
-- **Google Generative AI**: Embedding model (`models/embedding-001`, 768 dimensions)
+- **Weaviate**: Vector database for storing embeddings (v1.34.0)
+- **Google Generative AI**: Embedding model (`models/gemini-embedding-001`, 768 dimensions)
 - **LangChain**: Text splitting and embedding integration
 - **Patient Safety**: Filters sensitive data, patient-specific queries
+- **Performance**: gRPC enabled for 60-80% faster batch imports
 
 ## Notes
 

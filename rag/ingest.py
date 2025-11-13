@@ -356,7 +356,14 @@ def _batch_upsert(
                     if (idx + 1) % batch_size == 0:
                         logger.info(f"  Processed {idx + 1}/{total_objects} objects")
 
-            logger.info(f"Successfully imported all {total_objects} objects")
+            # Check for failed objects (v4 feature)
+            if collection.batch.failed_objects:
+                failed_count = len(collection.batch.failed_objects)
+                logger.warning(f"Batch import completed with {failed_count} failed objects")
+                for failed in collection.batch.failed_objects[:5]:  # Log first 5 failures
+                    logger.warning(f"  Failed object: {failed}")
+            else:
+                logger.info(f"Successfully imported all {total_objects} objects")
             break
 
         except Exception as e:
