@@ -1,33 +1,41 @@
 # Fortif.ai RAG System - Quick Start Guide
 
 ## Prerequisites
-- Docker installed
+- Docker and Docker Compose installed
 - Python 3.8+
 - Google API Key ([Get one here](https://makersuite.google.com/app/apikey))
 
 ## Setup Instructions
 
-### 1. Start Qdrant Vector Database
+### 1. Start Weaviate Vector Database
+Navigate to the `rag` directory and start Weaviate using Docker Compose:
 ```bash
-docker run -d -p 6333:6333 -p 6334:6334 --name qdrant qdrant/qdrant
+cd rag
+docker-compose up -d
 ```
 
+This will start Weaviate on:
+- HTTP: http://localhost:8080
+- gRPC: localhost:50051
+
 ### 2. Install Python Dependencies
+From the project root:
 ```bash
-pip install -r ../requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 3. Configure Environment Variables
-Create a `.env` file in the `rag` directory:
+Create a `.env` file in the project root (or `rag` directory):
 ```bash
 GOOGLE_API_KEY=your_google_api_key_here
 ```
 
 ### 4. Run Data Ingestion
 ```bash
+cd rag
 python ingest.py
 ```
-**First run:** Creates the collection automatically and ingests sample data.  
+**First run:** Creates the collection automatically and ingests sample data.
 **Subsequent runs:** Adds more data to the existing collection.
 
 ### 5. Test Queries
@@ -53,22 +61,35 @@ python query.py
 ## Configuration
 
 Edit these constants in the scripts if needed:
-- `QDRANT_HOST`: Default is `http://localhost:6333`
-- `QDRANT_COLLECTION_NAME`: Default is `fortif_ai_master_memory_google`
+- `WEAVIATE_HOST`: Default is `localhost`
+- `WEAVIATE_PORT`: Default is `8080`
+- `WEAVIATE_GRPC_PORT`: Default is `50051`
+- `WEAVIATE_COLLECTION_NAME`: Default is `FortifAiMasterMemory`
 - `EMBEDDING_MODEL`: Default is `models/embedding-001`
 - `VECTOR_DIMENSION`: Default is `768` (for Google's embedding model)
 
+Or set them via environment variables:
+```bash
+export WEAVIATE_HOST=localhost
+export WEAVIATE_PORT=8080
+export WEAVIATE_GRPC_PORT=50051
+```
+
 ## Troubleshooting
 
-### Qdrant not running?
-Check if container is running:
+### Weaviate not running?
+Check if containers are running:
 ```bash
-docker ps | grep qdrant
+docker-compose ps
+```
+or
+```bash
+docker ps | grep weaviate
 ```
 
 Restart if needed:
 ```bash
-docker restart qdrant
+docker-compose restart
 ```
 
 ### API Key issues?
@@ -77,20 +98,39 @@ Verify your `.env` file exists and has the correct format:
 cat .env
 ```
 
-### Check Qdrant is accessible:
-Visit http://localhost:6333/dashboard in your browser
+### Check Weaviate is accessible:
+Visit http://localhost:8080/v1/meta in your browser to see Weaviate metadata
+
+### View Weaviate logs:
+```bash
+docker-compose logs -f weaviate
+```
 
 ## Architecture
 
-- **Qdrant**: Vector database for storing embeddings
+- **Weaviate**: Vector database for storing embeddings (v1.33.3)
 - **Google Generative AI**: Embedding model (`models/embedding-001`, 768 dimensions)
 - **LangChain**: Text splitting and embedding integration
 - **Patient Safety**: Filters sensitive data, patient-specific queries
 
 ## Notes
 
-- Collection is created automatically on first run
-- Data persists in Docker container (use volumes for production)
+- Collection is created automatically on first run with proper schema
+- Data persists in Docker volume `weaviate_data` (configured in docker-compose.yml)
 - Batch size default: 100 (configurable)
 - Supports retry logic for API failures
+- Uses self-provided vectors with custom Google embeddings
+- Connection cleanup handled automatically with context managers
+
+## Stopping Weaviate
+
+To stop the Weaviate service:
+```bash
+docker-compose down
+```
+
+To stop and remove all data:
+```bash
+docker-compose down -v
+```
 

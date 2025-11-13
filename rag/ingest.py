@@ -3,12 +3,14 @@ import uuid
 import logging
 import time
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from qdrant_client import QdrantClient, models
+import weaviate
+import weaviate.classes as wvc
+from weaviate.classes.config import Property, DataType, Configure
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
@@ -20,9 +22,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
-QDRANT_COLLECTION_NAME = "fortif_ai_master_memory_google"
-EMBEDDING_MODEL = "models/embedding-001"
+WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
+WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8080"))
+WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
+WEAVIATE_COLLECTION_NAME = "FortifAiMasterMemory"
+EMBEDDING_MODEL = "models/text-embedding-004"  # Using text-embedding-004 (768 dimensions)
 VECTOR_DIMENSION = 768
 DEFAULT_BATCH_SIZE = 100
 CHUNK_SIZE = 500
@@ -114,52 +118,61 @@ def validate_patient_record(record: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def ensure_collection_exists(
-    client: QdrantClient, 
+    client: weaviate.WeaviateClient,
     collection_name: str
 ) -> None:
     """
-    Ensures the Qdrant collection exists. Creates it if it doesn't exist.
-    
+    Ensures the Weaviate collection exists. Creates it if it doesn't exist.
+
     Args:
-        client: QdrantClient instance
+        client: WeaviateClient instance
         collection_name: Name of the collection
     """
     try:
-        if client.collection_exists(collection_name):
+        if client.collections.exists(collection_name):
             logger.info(f"Collection '{collection_name}' already exists. Using existing collection.")
         else:
             logger.info(f"Collection '{collection_name}' does not exist. Creating it now...")
-            client.create_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=VECTOR_DIMENSION,
-                    distance=models.Distance.COSINE,
-                ),
+            client.collections.create(
+                name=collection_name,
+                vector_config=Configure.Vectors.self_provided(),
+                properties=[
+                    Property(name="text", data_type=DataType.TEXT),
+                    Property(name="patient_id", data_type=DataType.TEXT),
+                    Property(name="source", data_type=DataType.TEXT),
+                    Property(name="topic", data_type=DataType.TEXT),
+                    Property(name="is_sensitive", data_type=DataType.BOOL),
+                    Property(name="entities", data_type=DataType.TEXT_ARRAY),
+                    Property(name="emotion", data_type=DataType.TEXT),
+                    Property(name="chunk_index", data_type=DataType.INT),
+                    Property(name="total_chunks", data_type=DataType.INT),
+                    Property(name="ingested_at", data_type=DataType.TEXT),
+                ],
             )
             logger.info(f"Collection '{collection_name}' created successfully with vector size {VECTOR_DIMENSION}.")
-            
+
     except Exception as e:
         logger.error(f"Failed to ensure collection exists: {e}")
         raise IngestionError(f"Collection setup failed: {e}")
 
 
 def process_and_ingest_data(
-    client: QdrantClient, 
-    embedding_model: GoogleGenerativeAIEmbeddings, 
+    client: weaviate.WeaviateClient,
+    embedding_model: GoogleGenerativeAIEmbeddings,
     patient_data: List[Dict[str, Any]],
     batch_size: int = DEFAULT_BATCH_SIZE,
     validate_records: bool = True
 ) -> Dict[str, Any]:
     """
-    Processes raw data, creates embeddings, and upserts to Qdrant with batching.
-    
+    Processes raw data, creates embeddings, and upserts to Weaviate with batching.
+
     Args:
-        client: QdrantClient instance
+        client: WeaviateClient instance
         embedding_model: Embedding model instance
         patient_data: List of patient records
         batch_size: Number of points to process per batch
         validate_records: Whether to validate records before processing
-        
+
     Returns:
         Dictionary with ingestion statistics
     """
@@ -218,30 +231,40 @@ def process_and_ingest_data(
         logger.error(f"Failed to generate embeddings: {e}")
         raise IngestionError(f"Embedding generation failed: {e}")
     
-    # Create Qdrant points
-    qdrant_points = [
-        models.PointStruct(
-            id=str(uuid.uuid4()), 
-            vector=vector, 
-            payload=chunk
+    # Create Weaviate data objects
+    data_objects = [
+        wvc.data.DataObject(
+            properties={
+                "text": chunk["text"],
+                "patient_id": chunk["patient_id"],
+                "source": chunk["source"],
+                "topic": chunk["topic"],
+                "is_sensitive": chunk["is_sensitive"],
+                "entities": chunk["entities"],
+                "emotion": chunk["emotion"],
+                "chunk_index": chunk["chunk_index"],
+                "total_chunks": chunk["total_chunks"],
+                "ingested_at": chunk["ingested_at"],
+            },
+            vector=vector
         )
         for chunk, vector in zip(chunks_data, vectors)
     ]
-    
+
     # Batch upsert
     try:
-        logger.info(f"Upserting {len(qdrant_points)} points in batches of {batch_size}...")
-        _batch_upsert(client, qdrant_points, batch_size)
+        logger.info(f"Upserting {len(data_objects)} objects in batches of {batch_size}...")
+        _batch_upsert(client, data_objects, batch_size)
         logger.info("Data ingestion complete.")
     except Exception as e:
-        logger.error(f"Failed to upsert points: {e}")
+        logger.error(f"Failed to upsert objects: {e}")
         raise IngestionError(f"Upsert failed: {e}")
-    
+
     return {
         "status": "success",
         "records_processed": len(patient_data),
         "chunks_created": len(chunks_data),
-        "points_upserted": len(qdrant_points)
+        "objects_upserted": len(data_objects)
     }
 
 
@@ -309,50 +332,64 @@ def _generate_embeddings_batched(
 
 
 def _batch_upsert(
-    client: QdrantClient, 
-    points: List[models.PointStruct], 
+    client: weaviate.WeaviateClient,
+    data_objects: List[wvc.data.DataObject],
     batch_size: int = DEFAULT_BATCH_SIZE
 ) -> None:
-    """Upsert points to Qdrant in batches with retry logic."""
-    total_batches = (len(points) - 1) // batch_size + 1
-    
-    for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
-        batch_num = i // batch_size + 1
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"  Upserting batch {batch_num}/{total_batches}")
-                client.upsert(
-                    collection_name=QDRANT_COLLECTION_NAME, 
-                    points=batch, 
-                    wait=True
-                )
-                break
-                
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1:
-                    logger.warning(
-                        f"Batch {batch_num} failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
-                        f"Retrying in {RETRY_DELAY}s..."
+    """Upsert data objects to Weaviate in batches with retry logic."""
+    collection = client.collections.get(WEAVIATE_COLLECTION_NAME)
+    total_objects = len(data_objects)
+
+    logger.info(f"Starting batch import of {total_objects} objects...")
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Use Weaviate's batch context manager with fixed_size batching
+            with collection.batch.fixed_size(batch_size=batch_size) as batch:
+                for idx, data_obj in enumerate(data_objects):
+                    batch.add_object(
+                        properties=data_obj.properties,
+                        vector=data_obj.vector
                     )
-                    time.sleep(RETRY_DELAY)
-                else:
-                    logger.error(f"Batch {batch_num} failed after {MAX_RETRIES} attempts: {e}")
-                    raise
+
+                    if (idx + 1) % batch_size == 0:
+                        logger.info(f"  Processed {idx + 1}/{total_objects} objects")
+
+            logger.info(f"Successfully imported all {total_objects} objects")
+            break
+
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                logger.warning(
+                    f"Batch import failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
+                    f"Retrying in {RETRY_DELAY}s..."
+                )
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"Batch import failed after {MAX_RETRIES} attempts: {e}")
+                raise
 
 
-def initialize_clients() -> Tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
-    """Initialize and return Qdrant and embedding clients."""
+def initialize_clients() -> Tuple[weaviate.WeaviateClient, GoogleGenerativeAIEmbeddings]:
+    """Initialize and return Weaviate and embedding clients."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise EnvironmentError("GOOGLE_API_KEY environment variable not set.")
-    
+
     try:
-        qdrant_client = QdrantClient(QDRANT_HOST)
-        google_embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
-        logger.info("Clients for Qdrant and Google AI initialized.")
-        return qdrant_client, google_embedder
+        # Connect to local Weaviate instance
+        weaviate_client = weaviate.connect_to_local(
+            host=WEAVIATE_HOST,
+            port=WEAVIATE_PORT,
+            grpc_port=WEAVIATE_GRPC_PORT
+        )
+        # Initialize Google embedder with task_type for better results
+        google_embedder = GoogleGenerativeAIEmbeddings(
+            model=EMBEDDING_MODEL,
+            task_type="retrieval_document"
+        )
+        logger.info("Clients for Weaviate and Google AI initialized.")
+        return weaviate_client, google_embedder
     except Exception as e:
         logger.error(f"Failed to initialize clients: {e}")
         raise
@@ -361,23 +398,31 @@ def initialize_clients() -> Tuple[QdrantClient, GoogleGenerativeAIEmbeddings]:
 def main() -> None:
     """Main execution function."""
     logger.info("--- Starting Fortif.ai Data Ingestion ---")
-    
+
+    weaviate_client = None
     try:
-        qdrant_client, google_embedder = initialize_clients()
-        ensure_collection_exists(qdrant_client, QDRANT_COLLECTION_NAME)
-        
+        weaviate_client, google_embedder = initialize_clients()
+        ensure_collection_exists(weaviate_client, WEAVIATE_COLLECTION_NAME)
+
         onboarding_data = get_patient_onboarding_data()
-        stats = process_and_ingest_data(qdrant_client, google_embedder, onboarding_data)
-        
-        collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-        
+        stats = process_and_ingest_data(weaviate_client, google_embedder, onboarding_data)
+
+        # Get collection information
+        collection = weaviate_client.collections.get(WEAVIATE_COLLECTION_NAME)
+        collection_info = collection.aggregate.over_all(total_count=True)
+
         logger.info("--- Ingestion Complete! ---")
         logger.info(f"Ingestion stats: {stats}")
-        logger.info(f"Total points in '{QDRANT_COLLECTION_NAME}': {collection_info.points_count}")
-        
+        logger.info(f"Total objects in '{WEAVIATE_COLLECTION_NAME}': {collection_info.total_count}")
+
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
         raise
+    finally:
+        # Close Weaviate client connection
+        if weaviate_client is not None:
+            weaviate_client.close()
+            logger.info("Weaviate client connection closed.")
 
 
 if __name__ == "__main__":
