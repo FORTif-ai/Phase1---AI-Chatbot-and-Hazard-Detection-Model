@@ -13,7 +13,8 @@ WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
 WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8080"))
 WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
 WEAVIATE_COLLECTION_NAME = "FortifAiMasterMemory"
-EMBEDDING_MODEL = "models/text-embedding-004"  # Using text-embedding-004 (768 dimensions)
+EMBEDDING_MODEL = "models/gemini-embedding-001"  # Current model (supports 768-3072 dimensions)
+VECTOR_DIMENSION = 768
 
 
 def query_patient_memories(
@@ -53,9 +54,9 @@ def query_patient_memories(
         print(f"\nQuerying for Patient ID: '{patient_id}'")
         print(f"Question: '{question}'")
 
-        # Generate query vector
+        # Generate query vector with specified dimensionality
         print("Generating query embedding...")
-        query_vector = embedding_model.embed_query(question)
+        query_vector = embedding_model.embed_query(question, output_dimensionality=VECTOR_DIMENSION)
 
         # Build filter
         query_filter = Filter.by_property("patient_id").equal(patient_id)

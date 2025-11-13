@@ -26,7 +26,7 @@ WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
 WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8080"))
 WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
 WEAVIATE_COLLECTION_NAME = "FortifAiMasterMemory"
-EMBEDDING_MODEL = "models/text-embedding-004"  # Using text-embedding-004 (768 dimensions)
+EMBEDDING_MODEL = "models/gemini-embedding-001"  # Current model (supports 768-3072 dimensions)
 VECTOR_DIMENSION = 768
 DEFAULT_BATCH_SIZE = 100
 CHUNK_SIZE = 500
@@ -301,33 +301,34 @@ def _prepare_chunks(
 
 
 def _generate_embeddings_batched(
-    embedding_model: GoogleGenerativeAIEmbeddings, 
-    texts: List[str], 
+    embedding_model: GoogleGenerativeAIEmbeddings,
+    texts: List[str],
     batch_size: int = DEFAULT_BATCH_SIZE
 ) -> List[List[float]]:
     """Generate embeddings in batches to handle large datasets."""
     all_vectors = []
     total_batches = (len(texts) - 1) // batch_size + 1
-    
+
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         batch_num = i // batch_size + 1
-        
+
         try:
             logger.info(f"  Processing embedding batch {batch_num}/{total_batches}")
-            vectors = embedding_model.embed_documents(batch)
-            
+            # Pass output_dimensionality as a method parameter, not constructor parameter
+            vectors = embedding_model.embed_documents(batch, output_dimensionality=VECTOR_DIMENSION)
+
             if vectors and len(vectors[0]) != VECTOR_DIMENSION:
                 raise IngestionError(
                     f"Vector dimension mismatch: expected {VECTOR_DIMENSION}, got {len(vectors[0])}"
                 )
-            
+
             all_vectors.extend(vectors)
-            
+
         except Exception as e:
             logger.error(f"Failed to generate embeddings for batch {batch_num}: {e}")
             raise
-    
+
     return all_vectors
 
 
@@ -383,7 +384,7 @@ def initialize_clients() -> Tuple[weaviate.WeaviateClient, GoogleGenerativeAIEmb
             port=WEAVIATE_PORT,
             grpc_port=WEAVIATE_GRPC_PORT
         )
-        # Initialize Google embedder with task_type for better results
+        # Initialize Google embedder with task_type
         google_embedder = GoogleGenerativeAIEmbeddings(
             model=EMBEDDING_MODEL,
             task_type="retrieval_document"
