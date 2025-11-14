@@ -1,9 +1,9 @@
 import os
 import uuid
 import logging
-import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple, Optional
+from weaviate.collections.classes.data import DataObject
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -31,10 +31,6 @@ VECTOR_DIMENSION = 768
 DEFAULT_BATCH_SIZE = 100
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY = 2
 
 
 class IngestionError(Exception):
@@ -251,10 +247,35 @@ def process_and_ingest_data(
         for chunk, vector in zip(chunks_data, vectors)
     ]
 
-    # Batch upsert
+    # Batch upsert using Weaviate's built-in batch manager
     try:
-        logger.info(f"Upserting {len(data_objects)} objects in batches of {batch_size}...")
-        _batch_upsert(client, data_objects, batch_size)
+        collection = client.collections.get(WEAVIATE_COLLECTION_NAME)
+        logger.info(f"Upserting {len(data_objects)} objects...")
+
+        # Use dynamic batching - the client handles batching, errors, and retries automatically
+        with collection.batch.dynamic() as batch:
+            for idx, data_obj in enumerate(data_objects, 1):
+                batch.add_object(
+                    properties=data_obj.properties,
+                    vector=data_obj.vector
+                )
+
+                # Log progress every 100 objects
+                if idx % 100 == 0:
+                    logger.info(f"  Processed {idx}/{len(data_objects)} objects")
+
+        # Check for any failed objects after batch completion
+        failed_objs = collection.batch.failed_objects
+        if failed_objs:
+            logger.warning(
+                f"Ingestion completed with {len(failed_objs)} failed objects out of {len(data_objects)}"
+            )
+            # Log details of first few failures for debugging
+            for failed in failed_objs[:3]:
+                logger.warning(f"  Failed object: {failed}")
+        else:
+            logger.info(f"Successfully imported all {len(data_objects)} objects")
+
         logger.info("Data ingestion complete.")
     except Exception as e:
         logger.error(f"Failed to upsert objects: {e}")
@@ -330,52 +351,6 @@ def _generate_embeddings_batched(
             raise
 
     return all_vectors
-
-
-def _batch_upsert(
-    client: weaviate.WeaviateClient,
-    data_objects: List[wvc.data.DataObject],
-    batch_size: int = DEFAULT_BATCH_SIZE
-) -> None:
-    """Upsert data objects to Weaviate in batches with retry logic."""
-    collection = client.collections.get(WEAVIATE_COLLECTION_NAME)
-    total_objects = len(data_objects)
-
-    logger.info(f"Starting batch import of {total_objects} objects...")
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            # Use Weaviate's batch context manager with fixed_size batching
-            with collection.batch.fixed_size(batch_size=batch_size) as batch:
-                for idx, data_obj in enumerate(data_objects):
-                    batch.add_object(
-                        properties=data_obj.properties,
-                        vector=data_obj.vector
-                    )
-
-                    if (idx + 1) % batch_size == 0:
-                        logger.info(f"  Processed {idx + 1}/{total_objects} objects")
-
-            # Check for failed objects (v4 feature)
-            if collection.batch.failed_objects:
-                failed_count = len(collection.batch.failed_objects)
-                logger.warning(f"Batch import completed with {failed_count} failed objects")
-                for failed in collection.batch.failed_objects[:5]:  # Log first 5 failures
-                    logger.warning(f"  Failed object: {failed}")
-            else:
-                logger.info(f"Successfully imported all {total_objects} objects")
-            break
-
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1:
-                logger.warning(
-                    f"Batch import failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}. "
-                    f"Retrying in {RETRY_DELAY}s..."
-                )
-                time.sleep(RETRY_DELAY)
-            else:
-                logger.error(f"Batch import failed after {MAX_RETRIES} attempts: {e}")
-                raise
 
 
 def initialize_clients() -> Tuple[weaviate.WeaviateClient, GoogleGenerativeAIEmbeddings]:
