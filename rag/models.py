@@ -4,7 +4,7 @@ Pydantic models for Fortif.ai RAG API request/response validation.
 
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class QueryRequest(BaseModel):
@@ -15,14 +15,14 @@ class QueryRequest(BaseModel):
         min_length=1,
         max_length=100,
         description="Unique patient identifier",
-        example="patient_123"
+        json_schema_extra={"example": "patient_123"}
     )
     question: str = Field(
         ...,
         min_length=1,
         max_length=500,
         description="Patient's question or conversation prompt",
-        example="Tell me about my granddaughter's birthday"
+        json_schema_extra={"example": "Tell me about my granddaughter's birthday"}
     )
     include_sensitive: bool = Field(
         default=False,
@@ -31,7 +31,7 @@ class QueryRequest(BaseModel):
     emotion_filter: Optional[str] = Field(
         default=None,
         description="Filter memories by emotion type",
-        example="positive"
+        json_schema_extra={"example": "positive"}
     )
     limit: int = Field(
         default=3,
@@ -114,12 +114,12 @@ class IngestRequest(BaseModel):
     source: str = Field(
         ...,
         description="Source of the memory (e.g., 'family_questionnaire', 'ehr_note')",
-        example="family_questionnaire"
+        json_schema_extra={"example": "family_questionnaire"}
     )
     topic: str = Field(
         ...,
         description="Topic category (e.g., 'daily_routine', 'positive_memory')",
-        example="positive_memory"
+        json_schema_extra={"example": "positive_memory"}
     )
     is_sensitive: bool = Field(
         default=False,
@@ -128,12 +128,12 @@ class IngestRequest(BaseModel):
     entities: List[str] = Field(
         default_factory=list,
         description="Named entities mentioned (people, places, things)",
-        example=["Sarah (granddaughter)", "oak tree park"]
+        json_schema_extra={"example": ["Sarah (granddaughter)", "oak tree park"]}
     )
     emotion: str = Field(
         ...,
         description="Emotional valence of the memory",
-        example="positive"
+        json_schema_extra={"example": "positive"}
     )
 
     @field_validator("raw_text")
@@ -180,7 +180,7 @@ class HealthResponse(BaseModel):
         description="Number of objects in collection"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Health check timestamp"
     )
 
@@ -192,6 +192,6 @@ class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Detailed error message")
     path: Optional[str] = Field(None, description="Request path that caused error")
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Error timestamp"
     )

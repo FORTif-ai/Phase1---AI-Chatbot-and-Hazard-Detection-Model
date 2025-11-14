@@ -5,7 +5,7 @@ FastAPI application providing empathetic chatbot responses for dementia patients
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import weaviate
 from fastapi import FastAPI, HTTPException, status, Depends
@@ -140,7 +140,7 @@ async def http_exception_handler(request, exc):
             error=exc.detail,
             detail=str(exc.detail),
             path=str(request.url.path),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         ).dict()
     )
 
@@ -155,7 +155,7 @@ async def general_exception_handler(request, exc):
             error="Internal Server Error",
             detail="An unexpected error occurred. Please try again later.",
             path=str(request.url.path),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         ).model_dump()
     )
 
@@ -195,7 +195,7 @@ async def health_check():
             weaviate_connected=True,
             collection_exists=True,
             collection_count=collection_info.total_count,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
 
     except Exception as e:
@@ -270,7 +270,7 @@ async def query_patient(request: QueryRequest):
                 "retrieved_count": len(retrieved_docs),
                 "model": settings.llm_model,
                 "temperature": settings.llm_temperature,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         )
 
