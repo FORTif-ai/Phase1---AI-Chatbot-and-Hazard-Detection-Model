@@ -73,8 +73,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"Initializing Google LLM: {settings.llm_model} (temp={settings.llm_temperature})")
         app.state.llm = ChatGoogleGenerativeAI(
             model=settings.llm_model,
-            temperature=settings.llm_temperature,
-            convert_system_message_to_human=True  # Required for Gemini
+            temperature=settings.llm_temperature
         )
         logger.info("✓ LLM initialized")
 
@@ -141,7 +140,7 @@ async def http_exception_handler(request, exc):
             detail=str(exc.detail),
             path=str(request.url.path),
             timestamp=datetime.now(timezone.utc)
-        ).dict()
+        ).model_dump()
     )
 
 
