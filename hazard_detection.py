@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument(
         "--model", 
         type=str, 
-        default="runs/detect/train8/weights/best.pt", 
+        default="yolov8n.pt", 
         help="Path to the exported YOLOv8 model (ONNX, TorchScript) or .pt"
     )
     parser.add_argument(

@@ -51,8 +51,17 @@ uritemplate==4.1.1
 urllib3==2.3.0
 zstandard==0.23.0
 
+SpeechRecognition
+keyboard
+PyAudio
+git+https://github.com/1-mbps/simple_llm.git
+openai-whisper
+opencv-python
+ultralytics
+
+
 # RAG
-weaviate-client
+weaviate-client>=3.26.7,<4.0.0
 openai
 tiktoken
 langchain-community
