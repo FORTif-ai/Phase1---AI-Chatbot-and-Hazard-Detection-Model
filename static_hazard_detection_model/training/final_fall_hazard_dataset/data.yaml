@@ -1,0 +1,12 @@
+path: C:\Users\Akil\Documents\Code\watai\CV\static_detection_model\processed_data\final_fall_hazard_dataset
+train: images/train
+val: images/val
+test: images/test
+nc: 6
+names:
+- rug
+- clutter_zone
+- wire
+- uneven_threshold
+- furniture
+- staircase
