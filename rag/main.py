@@ -252,7 +252,7 @@ async def query_patient(request: QueryRequest):
                 topic=doc.properties["topic"],
                 emotion=doc.properties["emotion"],
                 source=doc.properties["source"],
-                distance=doc.metadata.distance,
+                score=doc.metadata.score,
                 chunk_index=doc.properties["chunk_index"],
                 total_chunks=doc.properties["total_chunks"]
             )

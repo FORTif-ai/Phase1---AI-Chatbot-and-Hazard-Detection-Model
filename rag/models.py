@@ -78,7 +78,7 @@ class SourceDocument(BaseModel):
     topic: str = Field(..., description="Memory topic category")
     emotion: str = Field(..., description="Associated emotion")
     source: str = Field(..., description="Source of the memory")
-    distance: float = Field(..., description="Vector similarity distance (lower = more relevant)")
+    score: float = Field(..., description="Hybrid search score (higher = more relevant)")
     chunk_index: int = Field(..., description="Chunk index if memory was split")
     total_chunks: int = Field(..., description="Total number of chunks for this memory")
 

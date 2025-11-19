@@ -67,14 +67,16 @@ def query_patient_memories(
         if emotion_filter:
             query_filter = query_filter & Filter.by_property("emotion").equal(emotion_filter)
 
-        # Perform search
-        print("Searching Weaviate...")
+        # Perform search (Hybrid)
+        print("Searching Weaviate (Hybrid)...")
         collection = weaviate_client.collections.get(WEAVIATE_COLLECTION_NAME)
-        response = collection.query.near_vector(
-            near_vector=query_vector,
+        response = collection.query.hybrid(
+            query=question,
+            vector=query_vector,
             limit=limit,
             filters=query_filter,
-            return_metadata=MetadataQuery(distance=True)
+            alpha=0.5,
+            return_metadata=MetadataQuery(score=True, explain_score=True)
         )
 
         # Display results
@@ -85,7 +87,7 @@ def query_patient_memories(
             print(f"Found {len(response.objects)} result(s):\n")
             for idx, obj in enumerate(response.objects, 1):
                 print(f"Result {idx}:")
-                print(f"  Distance: {obj.metadata.distance:.4f}")
+                print(f"  Score: {obj.metadata.score:.4f}")
                 print(f"  Text: {obj.properties.get('text', 'N/A')}")
                 print(f"  Topic: {obj.properties.get('topic', 'N/A')}")
                 print(f"  Source: {obj.properties.get('source', 'N/A')}")

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # === RAG Configuration ===
     default_retrieval_limit: int = Field(
-        default=3,
+        default=10,
         ge=1,
         le=10,
         description="Default number of documents to retrieve"

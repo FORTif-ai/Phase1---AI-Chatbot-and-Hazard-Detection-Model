@@ -102,14 +102,16 @@ class RAGPipeline:
                 query_filter = query_filter & Filter.by_property("emotion").equal(emotion_filter)
                 logger.info(f"Filtering by emotion: {emotion_filter}")
 
-            # Perform vector search
-            logger.info(f"Searching Weaviate for {limit} relevant memories...")
+            # Perform hybrid search (Keyword + Vector)
+            logger.info(f"Searching Weaviate (Hybrid) for {limit} relevant memories...")
             collection = self.client.collections.get(settings.weaviate_collection_name)
-            response = collection.query.near_vector(
-                near_vector=query_vector,
+            response = collection.query.hybrid(
+                query=question,
+                vector=query_vector,
                 limit=limit,
                 filters=query_filter,
-                return_metadata=MetadataQuery(distance=True)
+                alpha=0.5,  # Balanced between keyword (0.0) and vector (1.0)
+                return_metadata=MetadataQuery(score=True, explain_score=True)
             )
 
             logger.info(f"Retrieved {len(response.objects)} documents")
