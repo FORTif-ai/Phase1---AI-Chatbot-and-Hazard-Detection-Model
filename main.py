@@ -27,10 +27,10 @@ async def listen_for_commands(patient_id_input: str):
             while True:
                 print(" Press ‘s’ to speak (10 s). Press ‘q’ to quit. Press 'h' for hazard detection")
                 key = keyboard.read_key()
-                if key == 12: # 'q' on Mac keyboard
+                if key.lower() == "q": # 'q' on Mac keyboard
                     print("Quitting…")
                     break
-                if key == 1: # 's' on Mac keyboard
+                if key.lower() == "s": # 's' on Mac keyboard
 
                     print("Capturing audio segment…")
 
@@ -54,7 +54,7 @@ async def listen_for_commands(patient_id_input: str):
                     await processor.process_command(result["text"], patient_id=patient_id_input)
 
                     await asyncio.sleep(0.1)
-                if key == 4: # 'h' on Mac keyboard
+                if key.lower() == "h": # 'h' on Mac keyboard
                      subprocess.run(["python", "hazard_detection.py", "--model", "yolov8n.pt"])
                     
     except KeyboardInterrupt:

@@ -6,7 +6,11 @@ Uses Pydantic Settings for environment variable validation.
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
+import os
 
+# Get the directory of the current file (config.py), which ensures the path is relative to the config file, not the CWD.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_FILE_PATH = os.path.join(BASE_DIR, ".env") # Joins the directory path with the filename ".env"
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -70,6 +74,10 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://localhost:8000",
         description="Allowed CORS origins (comma-separated)"
     )
+    api_url: str = Field(
+        default="http://localhost:8000",
+        description="API URL"
+    )
 
     # === Ingestion Configuration ===
     chunk_size: int = Field(default=500, description="Text chunk size")
@@ -93,7 +101,7 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",")]
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False
     )
