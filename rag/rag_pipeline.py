@@ -13,9 +13,11 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from config import settings
+from models import Message
 from prompts import (
     get_rag_prompt_template,
     get_empty_context_prompt_template,
+    get_condense_question_prompt_template,
     contains_medical_query,
     get_medical_advice_deflection
 )
@@ -54,10 +56,12 @@ class RAGPipeline:
         # Initialize prompt templates
         self.rag_prompt = get_rag_prompt_template()
         self.empty_context_prompt = get_empty_context_prompt_template()
+        self.condense_question_prompt = get_condense_question_prompt_template()
 
         # Create LangChain chains
         self.rag_chain = self.rag_prompt | llm | StrOutputParser()
         self.empty_context_chain = self.empty_context_prompt | llm | StrOutputParser()
+        self.condense_question_chain = self.condense_question_prompt | llm | StrOutputParser()
 
         logger.info("RAG pipeline initialized successfully")
 
@@ -198,10 +202,43 @@ class RAGPipeline:
                 "Could you tell me more about what's on your mind?"
             )
 
+    def rewrite_query(self, question: str, history: List[Message]) -> str:
+        """
+        Rewrite question based on conversation history.
+
+        Args:
+            question: User's follow-up question
+            history: List of previous messages
+
+        Returns:
+            Rewritten standalone question
+        """
+        if not history:
+            return question
+
+        try:
+            # Format history as a string
+            history_str = "\n".join([f"{msg.role}: {msg.content}" for msg in history])
+            
+            logger.info("Rewriting query based on history...")
+            rewritten_query = self.condense_question_chain.invoke({
+                "chat_history": history_str,
+                "question": question
+            })
+            
+            cleaned_query = rewritten_query.strip()
+            logger.info(f"Query rewritten: '{question}' -> '{cleaned_query}'")
+            return cleaned_query
+
+        except Exception as e:
+            logger.error(f"Query rewriting failed: {e}")
+            return question
+
     def run(
         self,
         patient_id: str,
         question: str,
+        history: List[Message] = None,
         limit: int = 3,
         include_sensitive: bool = False,
         emotion_filter: Optional[str] = None
@@ -212,6 +249,7 @@ class RAGPipeline:
         Args:
             patient_id: Patient identifier
             question: User's question
+            history: Conversation history
             limit: Maximum documents to retrieve
             include_sensitive: Include sensitive memories
             emotion_filter: Optional emotion filter
@@ -221,10 +259,15 @@ class RAGPipeline:
         """
         logger.info(f"Starting RAG pipeline for patient_id={patient_id}")
 
+        # Step 0: Query Rewriting (if history exists)
+        search_query = question
+        if history:
+            search_query = self.rewrite_query(question, history)
+
         # Step 1: Retrieval
         docs = self.retrieve(
             patient_id=patient_id,
-            question=question,
+            question=search_query,
             limit=limit,
             include_sensitive=include_sensitive,
             emotion_filter=emotion_filter
@@ -234,6 +277,8 @@ class RAGPipeline:
         context, has_context = self.augment(docs)
 
         # Step 3: Generation
+        # Note: We pass the ORIGINAL question to the generation step to maintain conversational flow,
+        # but the context is retrieved using the REWRITTEN query.
         response = self.generate(context, question, has_context)
 
         logger.info("RAG pipeline completed successfully")

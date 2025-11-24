@@ -240,6 +240,7 @@ async def query_patient(request: QueryRequest):
         response_text, retrieved_docs = app.state.rag_pipeline.run(
             patient_id=request.patient_id,
             question=request.question,
+            history=request.history,
             limit=request.limit,
             include_sensitive=request.include_sensitive,
             emotion_filter=request.emotion_filter

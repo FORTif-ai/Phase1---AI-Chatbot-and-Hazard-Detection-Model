@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timezone
 
 
+class Message(BaseModel):
+    """A single message in the conversation history."""
+    role: str = Field(..., pattern="^(user|assistant)$", description="Role of the message sender")
+    content: str = Field(..., min_length=1, description="Content of the message")
+
+
 class QueryRequest(BaseModel):
     """Request model for querying patient memories."""
 
@@ -24,6 +30,10 @@ class QueryRequest(BaseModel):
         description="Patient's question or conversation prompt",
         json_schema_extra={"example": "Tell me about my granddaughter's birthday"}
     )
+    history: List[Message] = Field(
+        default_factory=list,
+        description="Conversation history for context-aware retrieval"
+    )
     include_sensitive: bool = Field(
         default=False,
         description="Whether to include sensitive memories in retrieval"
@@ -34,9 +44,9 @@ class QueryRequest(BaseModel):
         json_schema_extra={"example": "positive"}
     )
     limit: int = Field(
-        default=3,
+        default=10,
         ge=1,
-        le=10,
+        le=20,
         description="Maximum number of memories to retrieve"
     )
 

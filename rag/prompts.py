@@ -93,6 +93,29 @@ def get_empty_context_prompt_template() -> PromptTemplate:
     )
 
 
+CONDENSE_QUESTION_TEMPLATE = """Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question.
+
+Chat History:
+{chat_history}
+
+Follow Up Input: {question}
+
+Standalone question:"""
+
+
+def get_condense_question_prompt_template() -> PromptTemplate:
+    """
+    Get the prompt template for rewriting follow-up questions.
+
+    Returns:
+        PromptTemplate with {chat_history} and {question} variables
+    """
+    return PromptTemplate(
+        input_variables=["chat_history", "question"],
+        template=CONDENSE_QUESTION_TEMPLATE
+    )
+
+
 # Safety validation patterns (for future enhancement)
 UNSAFE_PATTERNS = [
     "diagnose",
