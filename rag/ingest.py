@@ -1,5 +1,6 @@
 import os
 import uuid
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple, Optional
@@ -36,6 +37,21 @@ CHUNK_OVERLAP = 50
 class IngestionError(Exception):
     """Custom exception for ingestion pipeline errors."""
     pass
+
+
+def generate_deterministic_uuid(content: str) -> str:
+    """
+    Generate a deterministic UUID based on content hash.
+    
+    Args:
+        content: String content to hash
+        
+    Returns:
+        UUID string
+    """
+    hash_object = hashlib.sha256(content.encode("utf-8"))
+    hash_hex = hash_object.hexdigest()
+    return str(uuid.UUID(hash_hex[:32]))
 
 
 def get_patient_onboarding_data() -> List[Dict[str, Any]]:
@@ -228,24 +244,32 @@ def process_and_ingest_data(
         raise IngestionError(f"Embedding generation failed: {e}")
     
     # Create Weaviate data objects
-    data_objects = [
-        wvc.data.DataObject(
-            properties={
-                "text": chunk["text"],
-                "patient_id": chunk["patient_id"],
-                "source": chunk["source"],
-                "topic": chunk["topic"],
-                "is_sensitive": chunk["is_sensitive"],
-                "entities": chunk["entities"],
-                "emotion": chunk["emotion"],
-                "chunk_index": chunk["chunk_index"],
-                "total_chunks": chunk["total_chunks"],
-                "ingested_at": chunk["ingested_at"],
-            },
-            vector=vector
+    data_objects = []
+    for chunk, vector in zip(chunks_data, vectors):
+        # Generate deterministic UUID based on content and patient_id
+        # This ensures that re-ingesting the same content for the same patient
+        # results in the same ID, preventing duplicates.
+        unique_content = f"{chunk['patient_id']}_{chunk['text']}"
+        obj_uuid = generate_deterministic_uuid(unique_content)
+        
+        data_objects.append(
+            wvc.data.DataObject(
+                properties={
+                    "text": chunk["text"],
+                    "patient_id": chunk["patient_id"],
+                    "source": chunk["source"],
+                    "topic": chunk["topic"],
+                    "is_sensitive": chunk["is_sensitive"],
+                    "entities": chunk["entities"],
+                    "emotion": chunk["emotion"],
+                    "chunk_index": chunk["chunk_index"],
+                    "total_chunks": chunk["total_chunks"],
+                    "ingested_at": chunk["ingested_at"],
+                },
+                vector=vector,
+                uuid=obj_uuid
+            )
         )
-        for chunk, vector in zip(chunks_data, vectors)
-    ]
 
     # Batch upsert using Weaviate's built-in batch manager
     try:
@@ -257,7 +281,8 @@ def process_and_ingest_data(
             for idx, data_obj in enumerate(data_objects, 1):
                 batch.add_object(
                     properties=data_obj.properties,
-                    vector=data_obj.vector
+                    vector=data_obj.vector,
+                    uuid=data_obj.uuid
                 )
 
                 # Log progress every 100 objects
